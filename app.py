@@ -9,11 +9,19 @@ from flask_bcrypt import Bcrypt
 from flask_jwt_extended import create_access_token, JWTManager
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from datetime import timedelta
+
 import jwt
 import datetime
 from dotenv import load_dotenv  # Load environment variables
 
+import pytz  # Import pytz for timezone conversion
 
+# Define IST timezone
+ist = pytz.timezone("Asia/Kolkata")
+
+# Get the current time in UTC and convert it to IST
+utc_now = datetime.datetime.utcnow()  # ✅ Fix: Access utcnow from the datetime class
+ist_now = utc_now.astimezone(ist)
 
 
 
@@ -21,7 +29,7 @@ from dotenv import load_dotenv  # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "https://empowerher-iota.vercel.app/"}}, supports_credentials=True)
+CORS(app, resources={r"/*": {"origins": "http://localhost:8080"}}, supports_credentials=True)
 
 bcrypt = Bcrypt(app)
 
@@ -653,7 +661,83 @@ def get_seller_orders():
         return jsonify({"error": "Token has expired"}), 401
     except jwt.InvalidTokenError:
         return jsonify({"error": "Invalid token"}), 401
+    
 
+@app.route("/api/checkout", methods=["POST"])
+def checkout():
+    try:
+        # Extract Authorization Header
+        auth_header = request.headers.get("Authorization")
+        print("Received Authorization Header:", auth_header)
+
+        if not auth_header or "Bearer " not in auth_header:
+            return jsonify({"error": "Authorization token is missing or invalid"}), 401
+
+        try:
+            # Extract token and decode it
+            token = auth_header.split(" ")[1]
+            decoded_token = jwt.decode(token, app.config["JWT_SECRET_KEY"], algorithms=["HS256"])
+            user_name = decoded_token.get("user")  # Extract username from token
+            print("Decoded Username:", user_name)
+
+            if not user_name:
+                return jsonify({"error": "Invalid token, user not found"}), 401
+
+            # Fetch user's cart items
+            user_cart = list(db.carts.find({"user": user_name}))
+            print("User Cart:", user_cart)
+
+            if not user_cart:
+                return jsonify({"message": "Cart is empty!"}), 400
+
+            # Extract cart array from user_cart
+            cart_items = user_cart[0]["cart"]
+
+            # Calculate total price after applying discounts
+            total_price = sum((item["price"] - (item["price"] * item["discount"] / 100)) * item["quantity"] for item in cart_items)
+
+            # Create a new order object
+            new_order = {
+                "id": int(ist_now.timestamp()),  # Unique Order ID in IST
+                "date": ist_now.strftime("%Y-%m-%d %H:%M:%S"),  # Date and Time in IST
+                "items": len(cart_items),  # Number of items
+                "total": total_price,  # Total price after discount
+                "status": "Pending", 
+                "seller_name": cart_items[0]["seller"] if cart_items else "Unknown Seller",  # Default status
+                
+                
+            }
+
+            # Check if the user already has an entry in the `orders` collection
+            existing_user_order = db.orders.find_one({"userName": user_name})
+
+            if existing_user_order:
+                # If user exists, append new order to the existing `orders` array
+                db.orders.update_one(
+                    {"userName": user_name},
+                    {"$push": {"orders": new_order}}
+                )
+            else:
+                # If user does not exist, create a new order entry
+                db.orders.insert_one({
+                    "userName": user_name,
+                    "orders": [new_order]  # Store as an array
+                })
+
+            # Clear the cart after checkout
+            db.carts.delete_many({"user": user_name})
+
+            return jsonify({"message": "Order placed successfully!", "order": new_order}), 200
+
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Token has expired"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Invalid token"}), 401
+
+    except Exception as e:
+        print("Error:", str(e))
+        return jsonify({"error": str(e)}), 500
+    
 # --------------- Run the Server ---------------
 if __name__ == '__main__':
     app.run(debug=True)
