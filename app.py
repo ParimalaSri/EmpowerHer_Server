@@ -29,7 +29,14 @@ ist_now = utc_now.astimezone(ist)
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "http://localhost:8080"}}, supports_credentials=True)
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            "http://localhost:8080",
+            "https://empowerher-iota.vercel.app"
+        ]
+    }
+}, supports_credentials=True)
 
 bcrypt = Bcrypt(app)
 
